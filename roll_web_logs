@@ -1,0 +1,218 @@
+#!/bin/sh
+
+BIN=/usr/local/bin
+CONF=/etc
+
+YEAR=`date '+%Y'`
+MONTH=`date '+%m'`
+LOGSUF="access_log"  # Any files in dir $LOGS with this suffix will be attacked.
+LOGSUF2="error_log"  # Any files in dir $LOGS with this suffix will be attacked.
+ID="/etc/rc.d/init.d"  # Dir containing the scripts for starting and stopping apache, realmedia, etc
+LOGS=/etc/httpd/logs
+MFILE=month
+YFILE=year
+ALL="*"
+HOST=w3
+
+
+echo "----------------------------------------------------------"
+date
+echo ""
+
+
+#  Roll access & error logs
+#  Big Ass Loop here 
+# -------------------------------------------------------------------------------------
+
+	echo "------------------ START FOR ${HOST} ----------------------"
+	cd $LOGS
+	echo "Now in `pwd`"
+
+	MF="${LOGS}/$MFILE"
+	YF="${LOGS}/$YFILE"
+
+	#  Create subdirs and (initialised) month file if/as necessary:
+
+	#  Store current month value in a file if file does not exist
+	if [ ! -f "$MF" ]
+	then
+        	echo $MONTH > $MF
+	fi
+
+	#  Store current year value in a file if file does not exist
+	if [ ! -f "$YF" ]
+	then
+        	echo $YEAR > $YF
+	fi
+
+
+	#  Get month value from file to compare with current month value from date
+	LAST_MONTH=`cat $MF`
+
+	#  Get year value from file to compare with current year value from date
+	LAST_YEAR=`cat $YF`
+
+	#  ----------------------------------------------------------------------
+	#  Run Webalizer here
+	#  ----------------------------------------------------------------------
+	
+
+	if [ -f "${CONF}/webalizer_${HOST}.conf" ]
+	then
+        	CMD="${BIN}/webalizer -c ${CONF}/webalizer_${HOST}.conf 2>&1 >/dev/null"
+        	echo $CMD
+		eval $CMD
+	fi
+
+
+	#  ----------------------------------------------------------------------
+	#  This next "if-block" is only executed when the month rolls over.  It
+	#  moves the $ARCHIVES files into a safe sub-dir ($DD) to clear the way
+	#  for the next month's data.  This means webalizer only ever has to
+	#  process a maximum of one month's data.
+	#
+	#  We can't include this code in the earlier for-loop (which has the same
+	#  parameters as this one) because this code must be run AFTER webalizer
+	#  has processed the files.
+	#  ----------------------------------------------------------------------
+
+	if [ $LAST_MONTH -ne $MONTH ]
+	then
+        	# Update month:
+        	echo $MONTH > $MF
+
+		if [ $LAST_YEAR -ne $YEAR ]
+		then
+	        	# Update year:
+        		echo $YEAR > $YF
+
+        		for f in *$LOGSUF
+        		do
+                		OF="`echo $f | cut -d '.' -f1`"
+
+		                if [ -s $f ]
+                		then
+                			echo "-----------------------------------------------------------"
+                			echo "NEW MONTH AND YEAR - compressing last year, last months log"
+                			echo "-----------------------------------------------------------"
+                			CMD="gzip ${LOGS}/${LAST_YEAR}/${f}_${LAST_MONTH}"
+                			echo "$CMD"
+                			eval $CMD
+				fi
+        		done
+                        for f in *$LOGSUF2
+                        do
+                                OF="`echo $f | cut -d '.' -f1`"
+
+                                if [ -s $f ]
+                                then
+                                	echo "-----------------------------------------------------------"
+                                	echo "NEW MONTH AND YEAR - compressing last year, last months log"
+                                	echo "-----------------------------------------------------------"
+                                	CMD="gzip ${LOGS}/${LAST_YEAR}/${f}_${LAST_MONTH}"
+                                	echo "$CMD"
+                                	eval $CMD
+				fi
+                        done
+
+
+		else
+
+        		for f in *$LOGSUF
+        		do
+                		OF="`echo $f | cut -d '.' -f1`"
+
+                                if [ -s $f ]
+                                then
+                			echo "---------------------------------------"
+                			echo "NEW MONTH - compressing last months log"
+                			echo "---------------------------------------"
+                			CMD="gzip ${LOGS}/${YEAR}/${f}_${LAST_MONTH}"
+                			echo "$CMD"
+                			eval $CMD
+				fi
+        		done
+                        for f in *$LOGSUF2
+                        do
+                                OF="`echo $f | cut -d '.' -f1`"
+	
+                                if [ -s $f ]
+                                then
+                                	echo "---------------------------------------"
+                                	echo "NEW MONTH - compressing last months log"
+                                	echo "---------------------------------------"
+                                	CMD="gzip ${LOGS}/${YEAR}/${f}_${LAST_MONTH}"
+                                	echo "$CMD"
+                                	eval $CMD
+				fi
+                        done
+
+		fi
+
+	fi
+
+
+	#  ----------------------------------------------------------------------
+	#  (c) Finally, rotate the apache logs by:
+	#     (1) appending the apache logs to our archived logs,
+	#     (2) briefly renaming the apache logs,
+	#     (3) sending apache a kill -SIGHUP (via "httpd reload" - see below), and
+	#     (4) deleting the renamed apache logs.
+	#  This is as per the apache doco (ie: apache responds to a kill -SIGHUP)
+	#  ----------------------------------------------------------------------
+
+	for f in *$LOGSUF
+	do
+        	OF="`echo $f | cut -d '.' -f1`"
+        	if [ ! -d "$YEAR" ]
+        	then
+                	mkdir $YEAR 2>/dev/null
+        	fi
+        	if [ -s $f ]
+        	then
+        	#  Append next apache error log, then rename it by adding .junk:
+                	CMD="cat $f >> $YEAR/${OF}_${MONTH}; mv $f ${f}.junk"
+                	echo "$CMD"
+                	eval $CMD
+        	fi
+	done
+
+        for f in *$LOGSUF2
+        do
+                OF="`echo $f | cut -d '.' -f1`"
+                if [ ! -d "$YEAR" ]
+                then
+                        mkdir $YEAR 2>/dev/null
+                fi
+                if [ -s $f ]
+                then
+                #  Append next apache error log, then rename it by adding .junk:
+                        CMD="cat $f >> $YEAR/${OF}_${MONTH}; mv $f ${f}.junk"
+                        echo "$CMD"
+                        eval $CMD
+                fi
+        done
+
+	for f in *.junk
+	do
+        	CMD="rm -f $f"
+		echo "$CMD"
+		eval $CMD
+	done
+
+	echo "------------------  DONE for ${HOST} ----------------------"
+	echo ""
+
+
+#  Call the www script with "reload" arg to do a clean restart of apache:
+echo ""
+echo "------------------  Reloading HTTPD -----------------------"
+CMD="kill -SIGHUP `cat /var/run/httpd.pid`"
+echo "$CMD"
+eval $CMD
+echo "-----------------------------------------------------------"
+
+echo ""
+date
+echo "-----------------------------------------------------------"
+
